@@ -19,65 +19,62 @@ class Searchology
     {
         $this->apiKey  = $config['api_key']  ?? null;
         $this->baseUrl = rtrim($config['base_url'] ?? self::DEFAULT_BASE_URL, '/');
-
-        $this->http = new Client([
+        $this->http    = new Client([
             'base_uri' => $this->baseUrl,
             'timeout'  => self::TIMEOUT,
-            'headers'  => [
-                'Content-Type' => 'application/json',
-                'Accept'       => 'application/json',
-            ],
+            'headers'  => ['Content-Type' => 'application/json', 'Accept' => 'application/json'],
         ]);
     }
 
     /**
      * Create a new API key. No authentication needed.
-     * Call this once, save the returned key, use it for all other methods.
      *
-     * Response: ['message', 'key', 'name', 'expires_in']
-     *
-     * @param  string $name  A label for this key (your app name, etc.)
-     * @return array
+     * @return array ['message', 'key', 'name', 'expires_in']
      * @throws SearchologyException
      *
      * @example
      * $client = new Searchology();
      * $result = $client->createApiKey('my-laravel-app');
-     * $apiKey = $result['key'];        // sgy_xxxx — save this
-     * $expiry = $result['expires_in']; // "30 days"
+     * $apiKey = $result['key']; // sgy_xxxx — save this
      */
     public function createApiKey(string $name): array
     {
-        if (empty(trim($name))) {
-            throw new SearchologyException('name is required');
-        }
-        if (strlen(trim($name)) > 64) {
-            throw new SearchologyException('name must be 64 characters or less');
-        }
+        if (empty(trim($name))) throw new SearchologyException('name is required');
+        if (strlen(trim($name)) > 64) throw new SearchologyException('name must be 64 characters or less');
 
-        $result = $this->request('POST', '/register', ['name' => trim($name)]);
-
-        // auto-set api key so other methods work immediately
+        $result       = $this->request('POST', '/register', ['name' => trim($name)]);
         $this->apiKey = $result['key'];
-
         return $result;
     }
 
     /**
-     * Check the status of your API key.
-     * Returns active status, days remaining, and request count.
+     * Get the full built-in schema — all extractable keys with descriptions.
+     * No authentication needed.
      *
-     * Response: ['status', 'name', 'expires_in', 'requests']
-     *
-     * @return array
+     * @return array ['total_keys', 'schema']
      * @throws SearchologyException
      *
      * @example
-     * $client = new Searchology(['api_key' => 'sgy_xxx']);
+     * $client = new Searchology();
+     * $schema = $client->getSchema();
+     * echo $schema['total_keys']; // 50+
+     */
+    public function getSchema(): array
+    {
+        return $this->request('GET', '/schema');
+    }
+
+    /**
+     * Check your API key status — expiry, request count, custom schema.
+     *
+     * @return array ['status', 'name', 'expires_in', 'requests', 'custom_schema']
+     * @throws SearchologyException
+     *
+     * @example
      * $status = $client->getKeyStatus();
-     * echo $status['expires_in']; // "18 days"
-     * echo $status['requests'];   // 142
-     * echo $status['status'];     // "active"
+     * echo $status['expires_in'];    // "18 days"
+     * echo $status['requests'];      // 142
+     * echo $status['custom_schema']; // true/false
      */
     public function getKeyStatus(): array
     {
@@ -87,18 +84,13 @@ class Searchology
 
     /**
      * Refresh your API key expiry — resets to 30 days from today.
-     * Same key string, same history, just extended expiry.
      *
-     * Response: ['message', 'expires_in']
-     *
-     * @return array
+     * @return array ['message', 'expires_in']
      * @throws SearchologyException
      *
      * @example
-     * $client = new Searchology(['api_key' => 'sgy_xxx']);
      * $result = $client->refreshKey();
      * echo $result['expires_in']; // "30 days"
-     * echo $result['message'];    // "Key expiry refreshed successfully"
      */
     public function refreshKey(): array
     {
@@ -107,35 +99,95 @@ class Searchology
     }
 
     /**
-     * Extract structured attributes from a natural language query.
+     * Save a custom schema against your API key.
+     * Keys can be built-in schema keys or completely custom ones. Max 50 keys.
      *
-     * Response: ['query', 'result', 'keys_found', 'latency_ms']
-     * Each result field: ['value', 'confidence']
-     *
-     * @param  string $query  Plain English search query. Max 500 chars.
-     * @return array
+     * @param  array $schema  ['key' => 'description', ...]
+     * @return array ['message', 'keys_saved', 'keys']
      * @throws SearchologyException
      *
      * @example
-     * $client = new Searchology(['api_key' => 'sgy_xxx']);
-     * $data   = $client->extract('black nike shoes under $80');
-     * echo $data['result']['color']['value'];      // 'black'
-     * echo $data['result']['color']['confidence']; // 1.0
+     * $client->saveSchema([
+     *   'color'     => 'product color e.g. red, blue, black',
+     *   'price_max' => 'maximum price as a number',
+     *   'brand'     => 'brand name e.g. nike, apple',
+     * ]);
      */
-    public function extract(string $query): array
+    public function saveSchema(array $schema): array
     {
         $this->requireApiKey();
 
-        if (empty(trim($query))) {
-            throw new SearchologyException('query must be a non-empty string');
-        }
-        if (strlen($query) > 500) {
-            throw new SearchologyException(
-                sprintf('query must be 500 characters or less (got %d)', strlen($query))
-            );
+        if (empty($schema)) {
+            throw new SearchologyException('schema cannot be empty');
         }
 
-        return $this->request('POST', '/extract', ['query' => $query]);
+        return $this->request('POST', '/key/schema', ['schema' => $schema]);
+    }
+
+    /**
+     * Get your saved custom schema.
+     *
+     * @return array ['keys_count', 'schema'] or ['custom_schema' => null, 'message']
+     * @throws SearchologyException
+     *
+     * @example
+     * $result = $client->getCustomSchema();
+     * print_r($result['schema']); // ['color' => '...', 'price_max' => '...']
+     */
+    public function getCustomSchema(): array
+    {
+        $this->requireApiKey();
+        return $this->request('GET', '/key/schema');
+    }
+
+    /**
+     * Delete your custom schema — falls back to built-in schema.
+     *
+     * @return array ['message']
+     * @throws SearchologyException
+     *
+     * @example
+     * $client->deleteCustomSchema();
+     */
+    public function deleteCustomSchema(): array
+    {
+        $this->requireApiKey();
+        return $this->request('DELETE', '/key/schema');
+    }
+
+    /**
+     * Extract structured attributes from a natural language query.
+     *
+     * @param  string $query          Plain English search query. Max 500 chars.
+     * @param  bool   $useCustomSchema Use your saved custom schema instead of built-in.
+     * @return array  ['query', 'result', 'keys_found', 'latency_ms', 'schema_used', 'suggestions?']
+     * @throws SearchologyException
+     *
+     * @example
+     * // built-in schema (default)
+     * $data = $client->extract('black nike shoes under $80');
+     *
+     * // custom schema
+     * $data = $client->extract('black nike shoes under $80', true);
+     *
+     * // check for suggestions when nothing found
+     * if ($data['keys_found'] === 0 && isset($data['suggestions'])) {
+     *     foreach ($data['suggestions'] as $suggestion) {
+     *         echo "Try: $suggestion\n";
+     *     }
+     * }
+     */
+    public function extract(string $query, bool $useCustomSchema = false): array
+    {
+        $this->requireApiKey();
+
+        if (empty(trim($query))) throw new SearchologyException('query must be a non-empty string');
+        if (strlen($query) > 500) {
+            throw new SearchologyException(sprintf('query must be 500 characters or less (got %d)', strlen($query)));
+        }
+
+        $path = $useCustomSchema ? '/extract?schema=true' : '/extract';
+        return $this->request('POST', $path, ['query' => $query]);
     }
 
     // ── private ────────────────────────────────────────────────────────────
@@ -169,11 +221,6 @@ class Searchology
                 throw new SearchologyException('Invalid JSON response from API');
             }
 
-            // auto-set api key after createApiKey
-            if ($path === '/register' && isset($data['key'])) {
-                $this->apiKey = $data['key'];
-            }
-
             return $data;
 
         } catch (ClientException $e) {
@@ -184,11 +231,7 @@ class Searchology
             throw new SearchologyException($msg, $status, $code);
 
         } catch (ConnectException $e) {
-            throw new SearchologyException(
-                'Could not connect to Searchology API: ' . $e->getMessage(),
-                0,
-                'connection_error'
-            );
+            throw new SearchologyException('Could not connect to Searchology API: ' . $e->getMessage(), 0, 'connection_error');
         }
     }
 }
